@@ -136,7 +136,7 @@ def ensure_session_defaults(artifacts):
 
 def main():
     st.title("Diagnostic maladies des plantes")
-    st.caption("Comparez deux modeles entraine pour identifier blight, mildew et rust.")
+    st.caption("Identifier la maladies des plantes.")
     artifacts = prepare_artifacts()
     logistic_model, extra_trees_model = load_models()
     ensure_session_defaults(artifacts)
@@ -152,8 +152,11 @@ def main():
             st.session_state.weather = sample["weather"]
             st.session_state.pesticide = sample["pesticide"]
         st.write("Ajustez les variables puis validez le formulaire.")
-
+    
+    st.subheader("Données")
+    
     with st.form("prediction_form"):
+        
         col_left, col_right = st.columns(2)
         with col_left:
             st.number_input("Longueur de la feuille", min_value=0.0, step=0.1, key="leaf_length")
@@ -213,8 +216,8 @@ def main():
             prob_rows.append(
                 {
                     "Maladie": label,
-                    "Regression logistique": logistic_map.get(label, 0.0),
-                    "ExtraTrees": extra_map.get(label, 0.0),
+                    "Model Standard": logistic_map.get(label, 0.0),
+                    "Model Optimise": extra_map.get(label, 0.0),
                 }
             )
         prob_df = pd.DataFrame(prob_rows).set_index("Maladie")
@@ -230,7 +233,7 @@ def main():
         with col_b:
             st.caption("Model optimise")
             st.metric(
-                "ExtraTrees",
+                "Classificateur Gradient Boosting",
                 extra_label,
                 delta=f"{extra_map.get(extra_label, 0.0) * 100:.1f} % de confiance",
             )
