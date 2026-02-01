@@ -20,11 +20,6 @@ NUMERIC_COLUMNS = ["leaf_length", "leaf_width", "stem_diameter"]
 TARGET_COLUMN = "disease_type"
 
 
-@st.cache_data
-def load_raw_data() -> pd.DataFrame:
-    return pd.read_csv(DATA_PATH)
-
-
 def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     cleaned = df.copy()
     for column in NUMERIC_COLUMNS:
@@ -38,11 +33,6 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
         cleaned[column] = np.clip(cleaned[column], lower, upper)
     cleaned = cleaned.drop_duplicates().reset_index(drop=True)
     return cleaned
-
-
-@st.cache_data
-def load_clean_data() -> pd.DataFrame:
-    return clean_data(load_raw_data())
 
 
 def encode_features(
@@ -78,7 +68,7 @@ def encode_features(
 
 @st.cache_resource
 def prepare_artifacts():
-    data = load_clean_data()
+    data = clean_data(pd.read_csv(DATA_PATH))
     pesticide_encoder = LabelEncoder().fit(data["pesticide"])
     soil_encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
     soil_encoder.fit(data[["soil_type"]])
@@ -93,6 +83,19 @@ def prepare_artifacts():
         random_state=23,
     )
     scaler = MinMaxScaler().fit(X_train)
+    defaults = {
+        "leaf_length": float(round(data["leaf_length"].mean(), 3)),
+        "leaf_width": float(round(data["leaf_width"].mean(), 3)),
+        "stem_diameter": float(round(data["stem_diameter"].mean(), 3)),
+        "soil_type": data["soil_type"].mode().iat[0],
+        "weather": data["weather"].mode().iat[0],
+        "pesticide": data["pesticide"].mode().iat[0],
+    }
+    categorical_options = {
+        "soil_type": sorted(data["soil_type"].unique()),
+        "weather": sorted(data["weather"].unique()),
+        "pesticide": sorted(data["pesticide"].unique()),
+    }
     return {
         "pesticide_encoder": pesticide_encoder,
         "soil_encoder": soil_encoder,
@@ -100,14 +103,17 @@ def prepare_artifacts():
         "feature_columns": encoded.columns.tolist(),
         "label_encoder": label_encoder,
         "scaler": scaler,
+        "defaults": defaults,
+        "categorical_options": categorical_options,
+        "clean_data": data,
     }
 
 
 @st.cache_resource
 def load_models():
-    with (BASE_DIR / "plant_diseases.pkl").open("rb") as handle:
+    with (BASE_DIR / "plant_disease_model.pkl").open("rb") as handle:
         logistic_model = pickle.load(handle)
-    with (BASE_DIR / "plant_diseases_best.pkl").open("rb") as handle:
+    with (BASE_DIR / "plant_disease_best_model.pkl").open("rb") as handle:
         extra_trees_model = pickle.load(handle)
     return logistic_model, extra_trees_model
 
@@ -117,39 +123,34 @@ def format_probabilities(model, probabilities, label_encoder):
     return dict(zip(class_labels, probabilities))
 
 
-def ensure_session_defaults(data: pd.DataFrame):
+def ensure_session_defaults(artifacts):
+    defaults = artifacts["defaults"]
     if "leaf_length" not in st.session_state:
-        averages = data[NUMERIC_COLUMNS].mean()
-        st.session_state.leaf_length = float(round(averages["leaf_length"], 3))
-        st.session_state.leaf_width = float(round(averages["leaf_width"], 3))
-        st.session_state.stem_diameter = float(round(averages["stem_diameter"], 3))
-        st.session_state.soil_type = data["soil_type"].mode().iat[0]
-        st.session_state.weather = data["weather"].mode().iat[0]
-        st.session_state.pesticide = data["pesticide"].mode().iat[0]
-
-
-def inject_random_sample(data: pd.DataFrame):
-    sample = data.sample(1, random_state=None).iloc[0]
-    st.session_state.leaf_length = float(round(sample["leaf_length"], 3))
-    st.session_state.leaf_width = float(round(sample["leaf_width"], 3))
-    st.session_state.stem_diameter = float(round(sample["stem_diameter"], 3))
-    st.session_state.soil_type = sample["soil_type"]
-    st.session_state.weather = sample["weather"]
-    st.session_state.pesticide = sample["pesticide"]
+        st.session_state.leaf_length = defaults["leaf_length"]
+        st.session_state.leaf_width = defaults["leaf_width"]
+        st.session_state.stem_diameter = defaults["stem_diameter"]
+        st.session_state.soil_type = defaults["soil_type"]
+        st.session_state.weather = defaults["weather"]
+        st.session_state.pesticide = defaults["pesticide"]
 
 
 def main():
     st.title("Diagnostic maladies des plantes")
     st.caption("Comparez deux modeles entraine pour identifier blight, mildew et rust.")
-    clean_data_df = load_clean_data()
     artifacts = prepare_artifacts()
     logistic_model, extra_trees_model = load_models()
-    ensure_session_defaults(clean_data_df)
+    ensure_session_defaults(artifacts)
 
     with st.sidebar:
         st.header("Configuration")
         if st.button("Observation aleatoire"):
-            inject_random_sample(clean_data_df)
+            sample = artifacts["clean_data"].sample(1, random_state=None).iloc[0]
+            st.session_state.leaf_length = float(round(sample["leaf_length"], 3))
+            st.session_state.leaf_width = float(round(sample["leaf_width"], 3))
+            st.session_state.stem_diameter = float(round(sample["stem_diameter"], 3))
+            st.session_state.soil_type = sample["soil_type"]
+            st.session_state.weather = sample["weather"]
+            st.session_state.pesticide = sample["pesticide"]
         st.write("Ajustez les variables puis validez le formulaire.")
 
     with st.form("prediction_form"):
@@ -161,22 +162,23 @@ def main():
         with col_right:
             st.selectbox(
                 "Type de sol",
-                sorted(clean_data_df["soil_type"].unique()),
+                artifacts["categorical_options"]["soil_type"],
                 key="soil_type",
             )
             st.selectbox(
                 "Meteo",
-                sorted(clean_data_df["weather"].unique()),
+                artifacts["categorical_options"]["weather"],
                 key="weather",
             )
             st.selectbox(
                 "Traitement pesticide",
-                sorted(clean_data_df["pesticide"].unique()),
+                artifacts["categorical_options"]["pesticide"],
                 key="pesticide",
             )
         submitted = st.form_submit_button("Lancer la prediction")
 
     if submitted:
+        st.subheader("Predictions")
         input_payload = {
             "leaf_length": st.session_state.leaf_length,
             "leaf_width": st.session_state.leaf_width,
@@ -219,12 +221,14 @@ def main():
 
         col_a, col_b = st.columns(2)
         with col_a:
+            st.caption("Model standard")
             st.metric(
                 "Regression logistique",
                 logistic_label,
                 delta=f"{logistic_map.get(logistic_label, 0.0) * 100:.1f} % de confiance",
             )
         with col_b:
+            st.caption("Model optimise")
             st.metric(
                 "ExtraTrees",
                 extra_label,
